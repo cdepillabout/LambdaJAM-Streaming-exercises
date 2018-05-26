@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE InstanceSigs #-}
 {- |
    Module      : LambdaJAM.Streaming.Exercise0
    Description : Exercise 0
@@ -12,6 +13,8 @@
  -}
 module LambdaJAM.Streaming.Exercise0 where
 
+import Control.Monad
+
 --------------------------------------------------------------------------------
 
 {-
@@ -24,9 +27,18 @@ As it currently stands, the 'Stream' data type here is isomorphic to
   * @r@ is the final result from running the 'Stream'.
 
 -}
-data Stream a r = Step a (Stream a r)
-                | Return r
+data Stream a m r = Step a (m (Stream a m r))
+                  | Return r
   deriving (Functor)
+
+instance Functor m => Applicative (Stream a m) where
+  pure = Return
+  (<*>) = ap
+
+instance Functor m => Monad (Stream x m) where
+  (>>=) :: Stream x m a -> (a -> Stream x m b) -> Stream x m b
+  Return r >>= strf = strf r
+  Step a next >>= strf = Step a $ fmap (>>= strf) next
 
 --------------------------------------------------------------------------------
 
@@ -39,11 +51,31 @@ initial methods of creating/running 'Stream's.
 
 -}
 
-streamToList :: Stream a r -> ([a], r)
-streamToList = error "streamToList"
+-- streamToList :: Stream a m r -> m ([a], r)
+-- streamToList (Step a str) = let (as, r) = streamToList str in (a : as, r)
+-- streamToList (Return r) = ([], r)
+-- streamToList = foldStream (\a (as, r) -> (a:as, r)) (\r -> ([], r))
 
-listToStream :: [a] -> Stream a ()
-listToStream = error "listToStream"
+streamToList :: Monad m => Stream a m r -> m ([a], r)
+streamToList (Return r) = pure ([], r)
+streamToList (Step a next) = do
+  str <- next
+  (as, r) <- streamToList str
+  pure (a : as, r)
+
+-- foldStream :: (a -> b -> b) -> (r -> b) -> Stream a m r -> m b
+-- foldStream comb b (Return r) = b r
+-- foldStream comb b (Step a str) = comb a (foldStream comb b str)
+
+-- listToStream :: [a] -> Stream a m ()
+-- listToStream [] = Return ()
+-- listToStream (a:as) = Step a (listToStream as)
+-- listToStream = foldr Step (Return ())
+-- listToStream = foldr Step (Return ())
+
+listToStream :: Applicative m => [a] -> Stream a m ()
+listToStream [] = Return ()
+listToStream (a:as) = Step a (pure $ listToStream as)
 
 --------------------------------------------------------------------------------
 
@@ -89,6 +121,10 @@ like 'length'.
 
 -}
 
+foldStream :: Monad m => (a -> b -> b) -> (r -> b) -> Stream a m r -> m b
+foldStream fol nul (Return r) = pure  $ nul r
+foldStream fol nul (Step a next) = next >>= foldStream fol nul >>= pure . fol a
+
 --------------------------------------------------------------------------------
 
 {-
@@ -104,3 +140,7 @@ Use these to do the equivalent of:
 > mapM_ print . map (*2) $ [1..10]
 
 -}
+
+mapMStr_ :: Monad f => (a -> f ()) -> Stream a f r -> f ()
+mapMStr_ f (Return r) = pure ()
+mapMStr_ f (Step a next) = f a *> next >>= mapMStr_ f

@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, DeriveFoldable, DeriveTraversable, RankNTypes #-}
+{-# LANGUAGE BangPatterns, DeriveFoldable, DeriveTraversable, InstanceSigs, RankNTypes, ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 
 {- |
@@ -13,6 +13,7 @@
  -}
 module LambdaJAM.Streaming.Exercise1 where
 
+import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Class
 import qualified Data.Foldable             as F
@@ -131,6 +132,15 @@ What are the consequences of the type you chose?
 
 -}
 
+splitAtStr :: Functor m => Int -> IStream a m r -> IStream a m (IStream a m r)
+splitAtStr i str
+  | i <= 0 = IReturn str
+  | otherwise =
+    case str of
+      IReturn r -> IReturn (IReturn r)
+      IEffect nextStr -> IEffect $ fmap (splitAtStr i) nextStr
+      IStep (a, next) -> IStep (a, splitAtStr (i - 1) next)
+
 --------------------------------------------------------------------------------
 
 {-
@@ -221,6 +231,17 @@ to actually carry a payload, we can use the left-strict pair.
 data FStream f m r = FStep (f (FStream f m r))
                    | FEffect (m (FStream f m r))
                    | FReturn r
+                   deriving Functor
+
+instance (Monad m, Functor f) => Applicative (FStream f m) where
+  pure = FReturn
+  (<*>) = ap
+
+instance (Functor f, Monad m) => Monad (FStream f m) where
+  (>>=) :: FStream f m a -> (a -> FStream f m b) -> FStream f m b
+  FReturn a >>= strf = strf a
+  FEffect next >>= strf = FEffect (next >>= pure . (>>= strf))
+  FStep next >>= strf = FStep $ fmap (>>= strf) next
 
 -- | A left-strict pair; the base functor for streams of individual elements.
 data Of a b = !a :> b
@@ -286,6 +307,62 @@ mapsM phi = go
 -- A traditional @mapM@-style function implemented using 'mapsM'.
 fMapM :: (Monad m) => (a -> m b) -> FStream (Of a) m r -> FStream (Of b) m r
 fMapM f = mapsM (\(a :> x) -> (:> x) <$> f a)
+
+splitAtStrF :: Functor m => Int -> FStream (Of a) m r -> FStream (Of a) m (FStream (Of a) m r)
+splitAtStrF i (FReturn r) = FReturn (FReturn r)
+splitAtStrF i (FEffect nextM) = FEffect (fmap (splitAtStrF i) nextM)
+splitAtStrF i (FStep (a :> next))
+  | i <= 0 = FReturn (FStep (a :> next))
+  | otherwise = FStep (a :> (splitAtStrF (i - 1) next))
+
+iMapMF_ :: (Monad m) => (a -> m b) -> FStream (Of a) m r -> m r
+iMapMF_ f = go
+  where
+    go stream = case stream of
+                  FStep (a :> str') -> f a >> go str'
+                  FEffect m      -> m >>= go
+                  FReturn r      -> return r
+
+printFStream :: (Show a, MonadIO m) => FStream (Of a) m r -> m r
+printFStream = iMapMF_ (liftIO . print)
+
+inlineFoldF ::
+     forall m x a b r.
+     (Monad m)
+  => (x -> a -> x)
+  -> x
+  -> (x -> b)
+  -> FStream (Of a) m r
+  -> m (b, r)
+inlineFoldF step begin done str = go str begin
+  where
+    go :: FStream (Of a) m r -> x -> m (b, r)
+    go stream !x = case stream of
+                     FReturn r       -> return (done x, r)
+                     FEffect m       -> m >>= \str' -> go str' x
+                     FStep (a :> rest) -> go rest $! step x a
+
+inlineToListF :: (Monad m) => FStream (Of a) m r -> m ([a], r)
+inlineToListF = inlineFoldF (\diff a ls -> diff (a:ls)) id ($[])
+
+listToInlineF :: (Monad m, F.Foldable f) => f a -> FStream (Of a) m ()
+listToInlineF = F.foldr (\a p -> FStep (a :> p)) (FReturn ())
+
+chunksOfF ::
+     (Monad m)
+  => Int
+  -> FStream (Of a) m r
+  -> FStream (FStream (Of a) m) m r
+chunksOfF num str = go 0 str
+  where
+    go :: Int -> FStream (Of a) m r -> FStream (FStream (Of a)
+    go i str
+      | i < num = undefined
+      | otherwise =
+-- chunksOfF i (FReturn r) = FReturn r
+-- chunksOfF i (FEffect nextM) = FEffect (fmap (chunksOfF i) nextM)
+-- chunksOfF i (FStep (a :> next))
+--   | i <= 0 = FReturn _
 
 --------------------------------------------------------------------------------
 
