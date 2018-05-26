@@ -17,6 +17,7 @@ import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Class
 import qualified Data.Foldable             as F
+import           Data.Monoid
 
 -- For Task 3
 import           Control.Monad     (join)
@@ -349,16 +350,73 @@ listToInlineF :: (Monad m, F.Foldable f) => f a -> FStream (Of a) m ()
 listToInlineF = F.foldr (\a p -> FStep (a :> p)) (FReturn ())
 
 chunksOfF ::
+     forall m r a.
      (Monad m)
   => Int
   -> FStream (Of a) m r
   -> FStream (FStream (Of a) m) m r
 chunksOfF num str = go 0 str
   where
-    go :: Int -> FStream (Of a) m r -> FStream (FStream (Of a)
-    go i str
-      | i < num = undefined
-      | otherwise =
+    go :: Int -> FStream (Of a) m r -> FStream (FStream (Of a) m) m r
+    go i (FReturn r) = FReturn r
+    go i (FEffect nextM) = FEffect $ fmap (go i) nextM
+    go i (FStep (a :> next))
+      | i < num = FStep (FStep (a :> foobar i next))
+      | otherwise = FStep (FReturn (go 0 (FStep (a :> next))))
+
+    foobar :: Int -> FStream (Of a) m r -> FStream (Of a) m (FStream (FStream (Of a) m) m r)
+    foobar i next =
+      let res = splitAtStrF i next
+      in fmap (go 0) res
+
+chunksOfFTest :: Show a => FStream (Of a) IO () -> IO ()
+chunksOfFTest strm = undefined
+  -- let chunks = chunksOfF 3 strm
+  -- iMapMF_ _ chunks
+
+-- mapChunkF ::
+--      forall a c r m. Functor m
+--   => (forall b. FStream (Of a) m b -> c)
+--   -> FStream (FStream (Of a) m) m r
+--   -> FStream (Of c) m r
+-- mapChunkF _ (FReturn r) = FReturn r
+-- mapChunkF func (FEffect nextM) = FEffect (fmap (mapChunkF func) nextM)
+-- mapChunkF func (FStep (FReturn next)) = mapChunkF func next
+-- mapChunkF func (FStep blah@(FEffect nextM)) =
+--   FEffect $
+--     let res = fmap (fmap (mapChunkF func)) nextM
+--     in _ res
+
+doStuff :: FStream (FStream (Of Int) IO) IO () -> IO ()
+doStuff (FReturn ()) = do
+  putStrLn "doStuff, got FReturn in outer, evaluating nextM..."
+  pure ()
+doStuff (FEffect nextM) = do
+  putStrLn "doStuff, got FEffect in outter, evaluating nextM..."
+  next <- nextM
+  putStrLn "doStuff, got FEffect in outter, finished evaluating nextM, recursing into next"
+  doStuff next
+doStuff (FStep (FReturn aefase)) = do
+  putStrLn "doStuff, got FStep in outer, FReturn in inner, recursing into next"
+  doStuff aefase
+doStuff (FStep (FEffect nextM)) = do
+  putStrLn "doStuff, got FStep in outer, FEffect in inner, printing ints..."
+  next <- nextM
+  ga <- iMapMF_ (\i -> putStrLn $ "doStuff, FStep in outer, FEffect in inner, inner iMapMF_, printing i: " <> show i) next
+  putStrLn "doStuff, got FStep in outer, FEffect in inner, finished printing ints, now recursing into next"
+  doStuff ga
+doStuff (FStep (FStep (i :> next))) = do
+  putStrLn $ "doStuff, got FStep in outer, FStep in inner, printing i: " <> show i
+  ga <- iMapMF_ (\i -> putStrLn $ "doStuff, FStep in outer, FStep in FStep, inner iMapMF_, printing i: " <> show i) next
+  putStrLn $ "doStuff, got FStep in outer, FStep in inner, finished printing ints, now recursing into next"
+  doStuff ga
+
+-- chunksOfF n strm =
+--   splitAtStrF n strm
+    -- go :: Int -> FStream (Of a) m r -> FStream (FStream (Of a)
+    -- go i str
+    --   | i < num = undefined
+    --   | otherwise =
 -- chunksOfF i (FReturn r) = FReturn r
 -- chunksOfF i (FEffect nextM) = FEffect (fmap (chunksOfF i) nextM)
 -- chunksOfF i (FStep (a :> next))
