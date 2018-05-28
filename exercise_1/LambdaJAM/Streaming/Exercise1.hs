@@ -309,12 +309,20 @@ mapsM phi = go
 fMapM :: (Monad m) => (a -> m b) -> FStream (Of a) m r -> FStream (Of b) m r
 fMapM f = mapsM (\(a :> x) -> (:> x) <$> f a)
 
-splitAtStrF :: Functor m => Int -> FStream (Of a) m r -> FStream (Of a) m (FStream (Of a) m r)
-splitAtStrF i (FReturn r) = FReturn (FReturn r)
-splitAtStrF i (FEffect nextM) = FEffect (fmap (splitAtStrF i) nextM)
-splitAtStrF i (FStep (a :> next))
-  | i <= 0 = FReturn (FStep (a :> next))
-  | otherwise = FStep (a :> (splitAtStrF (i - 1) next))
+fusedFold ::
+     forall m x a b r.
+     (Monad m)
+  => (x -> a -> x)
+  -> x
+  -> (x -> b)
+  -> FStream (Of a) m r
+  -> m (Of b r)
+fusedFold comb nil toB strm = go nil strm
+  where
+    go :: x -> FStream (Of a) m r -> m (Of b r)
+    go x (FReturn r) = pure $ toB x :> r
+    go x (FEffect nextM) = nextM >>= go x
+    go x (FStep (a :> next)) = go (comb x a) next
 
 iMapMF_ :: (Monad m) => (a -> m b) -> FStream (Of a) m r -> m r
 iMapMF_ f = go
@@ -343,49 +351,92 @@ inlineFoldF step begin done str = go str begin
                      FEffect m       -> m >>= \str' -> go str' x
                      FStep (a :> rest) -> go rest $! step x a
 
+inlineFoldF' ::
+     forall m f x a b c r.
+     (Monad m)
+  => (x -> a -> x)
+  -> x
+  -> (x -> r -> c)
+  -> (forall z. f a z -> a)
+  -> (forall y. f y (FStream (f a) m r) -> FStream (f a) m r)
+  -> FStream (f a) m r
+  -> m c
+inlineFoldF' step begin end getA getNext str = go str begin
+  where
+    go :: FStream (f a) m r -> x -> m c
+    go stream !x = case stream of
+                     FReturn r       -> return (end x r)
+                     FEffect m       -> m >>= \str' -> go str' x
+                     FStep next -> go (getNext next) $! step x (getA next)
+
 inlineToListF :: (Monad m) => FStream (Of a) m r -> m ([a], r)
 inlineToListF = inlineFoldF (\diff a ls -> diff (a:ls)) id ($[])
+
+-- inlineToListF' :: (Monad m) => FStream (f a) m r -> m (f [a] r)
+-- inlineToListF' = inlineFoldF (\diff a ls -> diff (a:ls)) id ($[])
 
 listToInlineF :: (Monad m, F.Foldable f) => f a -> FStream (Of a) m ()
 listToInlineF = F.foldr (\a p -> FStep (a :> p)) (FReturn ())
 
-chunksOfF ::
-     forall m r a.
-     (Monad m)
-  => Int
-  -> FStream (Of a) m r
-  -> FStream (FStream (Of a) m) m r
-chunksOfF num str = go 0 str
-  where
-    go :: Int -> FStream (Of a) m r -> FStream (FStream (Of a) m) m r
-    go i (FReturn r) = FReturn r
-    go i (FEffect nextM) = FEffect $ fmap (go i) nextM
-    go i (FStep (a :> next))
-      | i < num = FStep (FStep (a :> foobar i next))
-      | otherwise = FStep (FReturn (go 0 (FStep (a :> next))))
-
-    foobar :: Int -> FStream (Of a) m r -> FStream (Of a) m (FStream (FStream (Of a) m) m r)
-    foobar i next =
-      let res = splitAtStrF i next
-      in fmap (go 0) res
-
-chunksOfFTest :: Show a => FStream (Of a) IO () -> IO ()
-chunksOfFTest strm = undefined
-  -- let chunks = chunksOfF 3 strm
-  -- iMapMF_ _ chunks
-
--- mapChunkF ::
---      forall a c r m. Functor m
---   => (forall b. FStream (Of a) m b -> c)
+-- chunksOfF ::
+--      forall m r a.
+--      (Monad m)
+--   => Int
+--   -> FStream (Of a) m r
 --   -> FStream (FStream (Of a) m) m r
---   -> FStream (Of c) m r
--- mapChunkF _ (FReturn r) = FReturn r
--- mapChunkF func (FEffect nextM) = FEffect (fmap (mapChunkF func) nextM)
--- mapChunkF func (FStep (FReturn next)) = mapChunkF func next
--- mapChunkF func (FStep blah@(FEffect nextM)) =
---   FEffect $
---     let res = fmap (fmap (mapChunkF func)) nextM
---     in _ res
+-- chunksOfF num = go 0
+--   where
+--     go :: Int -> FStream (Of a) m r -> FStream (FStream (Of a) m) m r
+--     go i (FReturn r) = FReturn r
+--     go i (FEffect nextM) = FEffect $ fmap (go i) nextM
+--     go i (FStep (a :> next))
+--       | i < num = FStep (FStep (a :> foobar i next))
+--       | otherwise = FStep (FReturn (go 0 (FStep (a :> next))))
+
+--     foobar :: Int -> FStream (Of a) m r -> FStream (Of a) m (FStream (FStream (Of a) m) m r)
+--     foobar i next =
+--       let res = splitAtStrF i next
+--       in fmap (go 0) res
+
+chunksOfF ::
+     forall m f r.
+     (Monad m, Functor f)
+  => Int
+  -> FStream f m r
+  -> FStream (FStream f m) m r
+chunksOfF num = go
+  where
+    go :: FStream f m r -> FStream (FStream f m) m r
+    go (FReturn r) = FReturn r
+    go (FEffect nextM) = FEffect $ fmap go nextM
+    go strm@(FStep next) =
+      FStep (FStep (fmap (fmap go . splitAtStrF (num - 1)) next))
+
+    recurseOnRemainder ::
+         FStream f m (FStream f m r)
+      -> FStream f m (FStream (FStream f m) m r)
+    recurseOnRemainder = fmap go
+
+-- chunksOf' :: (Monad m, Functor f) => Int -> FStream f m r -> FStream (FStream f m) m r
+-- chunksOf' c = go
+--   where
+--     recurseOnRemainder = fmap go
+
+--     go (FReturn r)  = FReturn r
+--     go (FEffect m)  = FEffect (fmap go m)
+--     go (FStep step) =
+--       FStep (FStep (fmap (recurseOnRemainder . splitAtStrF (c - 1)) step))
+
+splitAtStrF ::
+     (Functor f, Functor m)
+  => Int
+  -> FStream f m r
+  -> FStream f m (FStream f m r)
+splitAtStrF i (FReturn r) = FReturn (FReturn r)
+splitAtStrF i (FEffect nextM) = FEffect (fmap (splitAtStrF i) nextM)
+splitAtStrF i (FStep next)
+  | i <= 0 = FReturn (FStep next)
+  | otherwise = FStep (fmap (splitAtStrF (i - 1)) next)
 
 doStuff :: FStream (FStream (Of Int) IO) IO () -> IO ()
 doStuff (FReturn ()) = do
@@ -410,6 +461,18 @@ doStuff (FStep (FStep (i :> next))) = do
   ga <- iMapMF_ (\i -> putStrLn $ "doStuff, FStep in outer, FStep in FStep, inner iMapMF_, printing i: " <> show i) next
   putStrLn $ "doStuff, got FStep in outer, FStep in inner, finished printing ints, now recursing into next"
   doStuff ga
+
+ofFst :: Of a b -> a
+ofFst (a :> _) = a
+
+ofSnd :: Of a b -> b
+ofSnd (_ :> b) = b
+
+testtest :: forall a. FStream (FStream (Of a) IO) IO () -> IO [[a]]
+testtest = fmap fst . inlineToListF . mapsM go
+  where
+    go :: forall x. FStream (Of a) IO x -> IO (Of [a] x)
+    go = inlineFoldF' (\as a -> a : as) [] (\as r -> reverse as :> r) ofFst ofSnd
 
 -- chunksOfF n strm =
 --   splitAtStrF n strm
