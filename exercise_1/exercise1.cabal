@@ -11,5 +11,6 @@ library
   exposed-modules:     LambdaJAM.Streaming.Exercise1
   build-depends:       base >=4.8 && <5
                      , conduit >= 1.2.11 && < 1.4
+                     , free
                      , transformers
   default-language:    Haskell2010

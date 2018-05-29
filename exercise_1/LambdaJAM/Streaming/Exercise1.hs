@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, DeriveFoldable, DeriveTraversable, InstanceSigs, RankNTypes, ScopedTypeVariables #-}
+{-# LANGUAGE BangPatterns, DeriveFoldable, DeriveTraversable, InstanceSigs, LambdaCase, RankNTypes, ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 
 {- |
@@ -16,7 +16,9 @@ module LambdaJAM.Streaming.Exercise1 where
 import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Class
+import           Control.Monad.Trans.Free
 import qualified Data.Foldable             as F
+import           Data.Functor.Classes
 import           Data.Monoid
 
 -- For Task 3
@@ -232,7 +234,106 @@ to actually carry a payload, we can use the left-strict pair.
 data FStream f m r = FStep (f (FStream f m r))
                    | FEffect (m (FStream f m r))
                    | FReturn r
-                   deriving Functor
+                   deriving (Functor)
+
+instance (Show1 f, Show1 m) => Show1 (FStream f m) where
+  liftShowsPrec ::
+       forall a.
+       (Int -> a -> ShowS)
+    -> ([a] -> ShowS)
+    -> Int
+    -> FStream f m a
+    -> ShowS
+  liftShowsPrec showA showAs d strm =
+    case strm of
+      FReturn a -> showsUnaryWith showA "FReturn" d a
+      FEffect nextM -> showsUnaryWith go "FEffect" d nextM
+      FStep nextF -> showsUnaryWith ho "FStep" d nextF
+    where
+      go :: Int -> m (FStream f m a) -> ShowS
+      go e nextM =
+        liftShowsPrec (liftShowsPrec showA showAs) (liftShowList showA showAs) e nextM
+
+      ho :: Int -> f (FStream f m a) -> ShowS
+      ho e nextM =
+        liftShowsPrec (liftShowsPrec showA showAs) (liftShowList showA showAs) e nextM
+
+instance (Show1 f, Show1 m, Show a) => Show (FStream f m a) where
+  showsPrec :: Int -> FStream f m a -> ShowS
+  showsPrec = showsPrec1
+
+newtype Id1 a = Id1 a deriving (Functor, Show)
+
+instance Show1 Id1 where
+    liftShowsPrec sp _ d (Id1 x) = showsUnaryWith sp "Id1" d x
+
+newtype Id2 a = Id2 a deriving (Functor, Show)
+
+instance Applicative Id2 where
+  pure = Id2
+  (<*>) = ap
+
+instance Monad Id2 where
+  Id2 a >>= k = k a
+
+instance Show1 Id2 where
+    liftShowsPrec sp _ d (Id2 x) = showsUnaryWith sp "Id2" d x
+
+
+-- instance (Show1 f, Show1 m) => Show1 (FreeT f m) where
+--   liftShowsPrec sp sl = go
+--     where
+--       goList = liftShowList sp sl
+--       go d (FreeT x) =
+--         showsUnaryWith
+--           (liftShowsPrec (liftShowsPrec2 sp sl go goList) (liftShowList2 sp sl go goList))
+--           "FreeT"
+--           d
+--           x
+
+-- instance Show1 f => Show2 (FreeF f) where
+--   liftShowsPrec2 spa _sla _spb _slb d (Pure a) =
+--     showsUnaryWith spa "Pure" d a
+--   liftShowsPrec2 _spa _sla spb slb d (Free as) =
+--     showsUnaryWith (liftShowsPrec spb slb) "Free" d as
+
+-- instance (Show1 f, Show a) => Show1 (FreeF f a) where
+--   liftShowsPrec = liftShowsPrec2 showsPrec showList
+
+-- showsPrec1 :: (Show1 f, Show a) => Int -> f a -> ShowS
+
+-- class Show2 f where
+--   liftShowsPrec2 ::
+--        (Int -> a -> ShowS)
+--     -> ([a] -> ShowS)
+--     -> (Int -> b -> ShowS)
+--     -> ([b] -> ShowS)
+--     -> Int
+--     -> f a b
+--     -> ShowS
+
+--   liftShowList2 ::
+--        (Int -> a -> ShowS)
+--     -> ([a] -> ShowS)
+--     -> (Int -> b -> ShowS)
+--     -> ([b] -> ShowS)
+--     -> [f a b]
+--     -> ShowS
+
+-- showsPrec2 :: (Show2 f, Show a, Show b) => Int -> f a b -> ShowS
+
+fstreamToFreeT :: (Functor f, Monad m) => FStream f m r -> FreeT f m r
+fstreamToFreeT (FReturn r) = FreeT $ pure $ Pure r
+fstreamToFreeT (FEffect nextM) = FreeT $ nextM >>= runFreeT . fstreamToFreeT
+fstreamToFreeT (FStep nextF) = FreeT $ pure $ Free $ fmap fstreamToFreeT nextF
+
+freeTToFStream :: forall f m r. (Functor f, Monad m) => FreeT f m r -> FStream f m r
+freeTToFStream (FreeT nextM) =
+  FEffect $ fmap go nextM
+  where
+    go :: FreeF f r (FreeT f m r) -> FStream f m r
+    go (Pure r) = FReturn r
+    go (Free f) = FStep (fmap freeTToFStream f)
 
 instance (Monad m, Functor f) => Applicative (FStream f m) where
   pure = FReturn
