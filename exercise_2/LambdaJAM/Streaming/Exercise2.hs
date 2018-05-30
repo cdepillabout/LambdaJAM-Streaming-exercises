@@ -1,3 +1,5 @@
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 
 {- |
@@ -152,6 +154,31 @@ through there to find it.
 
 task2Source :: (Monad m) => Stream (Of Int) m ()
 task2Source = S.each [1,2,1,3,2,1,4,3,2,1]
+
+breakOnLess :: forall m r. Monad m => Stream (Of Int) m r -> Stream (Stream (Of Int) m) m r
+breakOnLess strm = do
+  let next = S.next strm
+  S.effect $ next >>= \case
+    Left res -> pure $ pure res
+    Right (a, nextStrm) -> pure $ S.wrap $ S.yield a >> go a nextStrm
+  where
+    go :: Int -> Stream (Of Int) m r -> Stream (Of Int) m (Stream (Stream (Of Int) m) m r)
+    go firstElem nextStrm = do
+      let ss = S.next nextStrm
+      S.effect $ ss >>= \case
+        Left res -> pure $ pure $ pure res
+        Right (a, gagg) ->
+          if firstElem < a
+            then pure $ S.yield a >> go firstElem gagg
+            else pure $ pure $ breakOnLess nextStrm
+
+tester :: IO ()
+tester = do
+  let streams = breakOnLess (task2Source :: Stream (Of Int) IO ())
+      lists = S.mapped (S.toList) streams :: Stream (Of [Int]) IO ()
+  S.print lists
+
+
 
 {-
 
