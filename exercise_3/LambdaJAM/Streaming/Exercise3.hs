@@ -44,7 +44,7 @@ back "Strings" if you want to print them nicely.
 
 -- | Make every letter upper-case.
 capitalise :: (Monad m) => Stream (Of Char) m r -> Stream (Of Char) m r
-capitalise = error "capitalise"
+capitalise = S.map toUpper
 
 -- | Split the Stream into Streams of words which were delimited by
 --   whitespace (i.e. no whitespace should be present in any
