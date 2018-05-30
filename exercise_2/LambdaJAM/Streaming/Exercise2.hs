@@ -31,6 +31,8 @@ import qualified Streaming as S
 -- similar arguments) to functions in the "Prelude" and "Data.List".
 import qualified Streaming.Prelude as S
 
+import qualified Streaming.Internal as SI
+
 -- Other imports
 import Control.Monad.IO.Class (MonadIO)
 
@@ -177,7 +179,44 @@ tester = do
   let streams = breakOnLess (task2Source :: Stream (Of Int) IO ())
       lists = S.mapped (S.toList) streams :: Stream (Of [Int]) IO ()
   S.print lists
+  let orig = S.streamFold pure S.effect lala streams :: Stream (Of Int) IO ()
+  S.print orig
+  where
+    lala :: Stream (Of Int) IO (Stream (Of Int) IO ()) -> Stream (Of Int) IO ()
+    lala strm = do
+      let fff = S.next strm
+      S.effect $ fmap papa fff
 
+    papa :: Either (Stream (Of Int) IO ()) (Int, Stream (Of Int) IO (Stream (Of Int) IO ())) -> Stream (Of Int) IO ()
+    papa (Left nextStrm) = nextStrm
+    papa (Right (i, nextStrms)) = S.yield i >> lala nextStrms
+
+
+
+tester2 :: IO ()
+tester2 = do
+  let streams = S.groupBy (<) task2Source
+      innerLists = S.mapped S.toList streams
+  S.print innerLists
+  let orig = S.streamFold pure S.effect lala streams :: Stream (Of Int) IO ()
+  S.print orig
+  where
+    lala :: Stream (Of Int) IO (Stream (Of Int) IO ()) -> Stream (Of Int) IO ()
+    lala strm = do
+      let fff = S.next strm
+      S.effect $ fmap papa fff
+
+    papa :: Either (Stream (Of Int) IO ()) (Int, Stream (Of Int) IO (Stream (Of Int) IO ())) -> Stream (Of Int) IO ()
+    papa (Left nextStrm) = nextStrm
+    papa (Right (i, nextStrms)) = S.yield i >> lala nextStrms
+
+tester4 :: Stream (Of Int) Identity ()
+tester4 = S.concats $ S.groupBy (<) task2Source
+
+tester3 :: IO ()
+tester3 = do
+  let streams = S.groupBy (<) task2Source
+  print $ task2Source == (S.concats streams :: Stream (Of Int) Identity ())
 
 
 {-
@@ -229,7 +268,7 @@ task3Example :: IO ()
 task3Example = processInnerStream
                . processOuterStream
                . S.copy
-               $ S.each [1..10]
+               $ lala2
   where
     -- Note: we don't care what the Monad is!
     processOuterStream :: (MonadIO m) => Stream (Of Int) m () -> m ()
@@ -237,6 +276,35 @@ task3Example = processInnerStream
 
     processInnerStream :: Stream (Of Int) IO () -> IO ()
     processInnerStream = S.print . S.map show
+
+    lala :: Stream (Of Int) IO ()
+    lala = S.each [1..10]
+
+    lala2 :: Stream (Of Int) m ()
+    lala2 = SI.Step (1 :> (SI.Step (2 :> (SI.Step (3 :> (SI.Return ()))))))
+
+-- -- myCopy :: Monad m => Stream (Of a) m r -> Stream (Of a) (Stream (Of a) m) r
+-- -- myCopy (SI.Return r) = SI.Return r
+-- -- myCopy (SI.Effect m) = SI.Effect $ SI.Effect $ fmap (_ . myCopy)  m
+-- myCopy :: forall m a r. Monad m => Stream (Of a) m r -> Stream (Of a) (Stream (Of a) m) r
+-- myCopy = SI.Effect . pure . go
+--   where
+--     go :: Stream (Of a) m r -> Stream (Of a) (Stream (Of a) m) r
+--     go (SI.Return r) = SI.Return r
+--     go (SI.Effect m) =
+--       let liftedThing = S.lift m
+--           liftedThing2 = SI.Effect m
+--           blah = undefined -- S.lift
+--       in
+--       SI.Effect (fmap undefined liftedThing)
+
+myCopy :: Monad m => Stream (Of Int) m r -> Stream (Of Int) (Stream (Of String) m) r
+myCopy (SI.Return r) = SI.Return r
+myCopy (SI.Step (i :> nextF)) = SI.Step (i :> SI.Effect (SI.Step (show i :> SI.Return (myCopy nextF))))
+myCopy (SI.Effect nextM) = SI.Effect (let gaga = fmap (SI.Return . myCopy) nextM in SI.Effect gaga)
+
+yomyexample :: IO ()
+yomyexample = S.print $ S.print $ myCopy $ S.each [1..3]
 
 {-
 
